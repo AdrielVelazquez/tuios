@@ -7,6 +7,48 @@ below. Two of them are **not** caught here; that is written down rather than
 papered over, because a suite whose real coverage is unknown is worse than no
 suite.
 
+## Pi transcript reading and selected branches
+
+On 2026-10-22, the Pi reader was tested through real daemons, the hook CLI,
+the generated Pi extension under Node, and the actual Inbox. Fixtures are
+synthetic; no provider or real conversation is involved. The generated-extension
+tests require Node on PATH (the run used the already-installed Pi Node 24
+dependency, not a new installation).
+
+| Control | Named test and observed failure |
+| --- | --- |
+| Baseline `2bfb9d45`, before reader registration/wiring | `TestPersonReadsPiTranscript` and `TestPiTranscriptTreePaging`: `unsupported_harness: the transcript of pi cannot be read`; `TestCockpitThreadOtherHarnesses/pi` showed the unsupported-reader message. |
+| Bypass `piProject` at its call site in `piRead`, feeding the original file to the decoder | `TestPersonReadsPiTranscript`: `Pi transcript exposed "ABANDONED-BRANCH"`. |
+| Remove the `docEvent` call when an existing join's selected leaf changes | `TestPiTranscriptFollowsSelectedBranch`: `no Pi transcript event: stream read timed out`; the Inbox kept the old branch. |
+| Before metadata-only `transcript_update` translation | `TestPiTranscriptHookNegotiatesLeaf` and `TestPiTranscriptFollowsSelectedBranch`: the event was not mapped. |
+| Generated extension before its `session_tree` handler | `TestPiTranscriptSessionLifecycle`: the abandoned branch never appeared after selecting it. |
+| Before dropping an old join on a new no-file Pi session | `TestPiTranscriptEphemeralDoesNotReuseHistory`: the ephemeral session returned the previous persisted conversation. |
+| Accepted replacement identity whose new path is refused | `TestPiTranscriptRefusedReplacementClearsHistory`: the new session exposed the previous conversation. |
+| Identity-only replacement without a new file | `TestPiTranscriptIdentityOnlyReplacementClearsHistory`: the new identity reused the previous transcript. |
+| Result arriving after its call was drawn | `TestPiTranscriptLiveToolResultUpdatesCall`: the retained call stayed running and hid its failed output. |
+| `setImmediate` used as a persistence boundary before a later async extension | `TestPiTranscriptWaitsForActualPersistence`: the new message stayed hidden after it was persisted. |
+| Visible custom append without any extension message event | `TestPiTranscriptIdleCustomAppend`: the persisted message stayed hidden. |
+| No `bashExecution` decoder | `TestPiTranscriptDirectShellHistory`: direct command statuses were empty. |
+| Unbounded serialized promise queue | `TestPiTranscriptReportQueueHasBoundedDrain`: shutdown exceeded the total drain budget. |
+
+The ancestry/notification mutations were built in a throwaway source copy,
+not in the working branch or the live daemon. Each was restored afterwards.
+Repeat a control from `e2e/tui` with:
+
+```sh
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/control-tuios \
+  go test -count=1 -run '^TestPersonReadsPiTranscript$' .
+TUIOS_E2E=1 TUIOS_E2E_BIN=/path/to/control-tuios \
+  go test -count=1 -run '^TestPiTranscriptFollowsSelectedBranch$' .
+```
+
+The passing run checks both sibling leaves and descendant appends, empty and
+not-yet-complete selected leaves, paging IDs, session replacement, headless
+exclusion after draining reports, non-human/path refusals, malformed ancestry,
+size limits and secret/control sanitization. Protocol artifacts are
+`pi-transcript*.txt` and `pi-selected-branch.txt` under the test artifacts
+directory; the Inbox tests also save plain/styled screens and PNG frames.
+
 ## Sidebar-created worktrees apply startup tiling
 
 `TestRailRightClickMakesAWorktree` drives the repository row's real right-click

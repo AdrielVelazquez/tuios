@@ -175,7 +175,7 @@ type threadWatchEnded struct{ key string }
 // reader internal/transcriptview has.
 func threadTranscriptHarness(h string) bool {
 	switch h {
-	case "claude-code", "codex", "gemini-cli", "qwen", "copilot", "amp", "opencode", "cursor-agent":
+	case "claude-code", "codex", "gemini-cli", "qwen", "copilot", "amp", "opencode", "cursor-agent", "pi":
 		return true
 	}
 	return false
@@ -346,6 +346,25 @@ func (m *OS) applyThreadPage(msg threadPageMsg) tea.Cmd {
 		}
 		at[e.ID] = len(t.entries)
 		t.entries = append(t.entries, e)
+	}
+	// A result can arrive on a later page than the call it finishes. Fold it
+	// into retained calls too, otherwise a cached running card hides failures.
+	// Walk backwards to pair each result with its nearest preceding call.
+	results := make(map[string]string)
+	for i := len(t.entries) - 1; i >= 0; i-- {
+		e := &t.entries[i]
+		if e.ToolID == "" {
+			continue
+		}
+		switch e.Kind {
+		case "tool_result":
+			results[e.ToolID] = e.Status
+		case "tool_call":
+			if status, ok := results[e.ToolID]; ok {
+				e.Status = status
+				delete(results, e.ToolID)
+			}
+		}
 	}
 	// The thread draws the newest; the page bound holds the rest.
 	if n := len(t.entries); n > 200 {

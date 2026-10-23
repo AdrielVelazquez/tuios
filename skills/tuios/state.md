@@ -153,6 +153,20 @@ and gives up after 500ms, so a dead daemon never slows the harness.
 now runs the same reporter. Outside tuios, with `TUIOS_ENV` unset, it reports
 nothing.
 
+Pi's version 3 integration also lets the person read its active conversation in
+the Inbox: messages, visible thinking, tools/results, direct shell history,
+edit diffs and errors.
+It reports the selected branch separately from working/done/question state,
+including `/tree` changes that do not append to the session file. Reload Pi
+after updating its managed integration. An older integration follows the last
+complete entry's branch and cannot report an in-memory rewind.
+
+The default reader accepts only `~/.pi/agent/sessions/*/*.jsonl`, Pi session
+versions 2/3, up to 32 MiB and 100,000 entries (16 MiB per record). Custom session
+roots need a matching Tuios manifest; `--no-session` gives no conversation to
+read. This is the person's view, not a new transcript-reading permission for
+agents. No new interactive reply or branch-navigation interface is added.
+
 To report the same things by hand from another harness's hooks:
 
 ```sh

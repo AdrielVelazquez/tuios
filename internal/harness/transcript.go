@@ -70,6 +70,7 @@ var knownReaders = map[string]struct{}{
 	"amp-thread":       {},
 	"opencode-service": {},
 	"cursor-jsonl":     {},
+	"pi-jsonl":         {},
 }
 
 // KnownReaders returns the reader names a manifest may give.

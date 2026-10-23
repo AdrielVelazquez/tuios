@@ -79,6 +79,7 @@ var formats = map[string]format{
 	FormatCopilot: {line: copilotLine, identity: copilotIdentity},
 	FormatAmp:     {line: ampLine, doc: ampDoc},
 	FormatCursor:  {line: cursorLine},
+	FormatPi:      {line: piLine},
 }
 
 // lookupFormat returns the format a name names, FormatClaude for "".

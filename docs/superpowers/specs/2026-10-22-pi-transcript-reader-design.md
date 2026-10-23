@@ -14,6 +14,8 @@ daemon, push, or open a pull request as part of implementation.
   1.3.0's packaged session-format/message-types documentation and session manager.
 - Show user and assistant text, visible thinking, tool calls/results, native edit
   and write diffs, failed tool calls, provider errors and aborted responses.
+- Include direct shell (`bashExecution`) history and update retained tool-call
+  statuses when their results arrive on later pages.
 - Preserve active-branch conversation history, including compaction/branch
   summaries. Model-context edits must not rewrite the displayed raw history.
 - Skip system prompt/tool declarations, opaque signatures, extension state and
@@ -45,6 +47,16 @@ file size is unchanged. Serialize the extension's child reports so old leaf or
 session reports cannot overtake newer ones. Observe session_start, session_tree,
 message persistence and compaction at the verified Pi lifecycle boundaries;
 print/RPC/headless children must still never claim the pane.
+
+Persistence updates use parent-directory file notifications, which sample the
+leaf after Pi's synchronous persistence and also cover custom messages appended
+at rest. Do not infer persistence from message_end or an event-loop delay:
+other extensions can still be awaiting work. Watch metadata only and stop on
+session replacement/shutdown. Bound delivery to 32 queued reports, 64 KiB per
+payload and one second of shutdown drain; coalesce superseded metadata and
+retain FIFO ordering among delivered state reports. Overload is best-effort.
+An accepted new identity whose path is absent or refused must clear old history;
+same-session path refusals preserve the current join.
 
 The reader builds a bounded, request-local projection of the selected ancestry,
 then uses the existing paging and Entry finishing code. No background content

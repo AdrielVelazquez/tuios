@@ -1375,11 +1375,12 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		// The fields below are what a hook reporter adds. Every one is
 		// optional, and a caller that sends none of them is handled exactly as
 		// before they existed.
-		Kind           string `json:"kind"`
-		AgentSessionID string `json:"agent_session_id"`
-		TranscriptPath string `json:"transcript_path"`
-		IfState        string `json:"if_state"`
-		HarnessPID     int    `json:"harness_pid"`
+		Kind           string  `json:"kind"`
+		AgentSessionID string  `json:"agent_session_id"`
+		TranscriptPath string  `json:"transcript_path"`
+		TranscriptLeaf *string `json:"transcript_leaf"`
+		IfState        string  `json:"if_state"`
+		HarnessPID     int     `json:"harness_pid"`
 		// SessionStart marks a conversation's SessionStart. See
 		// AgentReport.SessionStart.
 		SessionStart bool `json:"session_start"`
@@ -1396,6 +1397,9 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		return nil, verr
 	}
 	if verr := checkActivityReport(p.Activity, activityEvents); verr != nil {
+		return nil, verr
+	}
+	if verr := checkTranscriptSelection(p.Harness, p.TranscriptPath, p.TranscriptLeaf); verr != nil {
 		return nil, verr
 	}
 	if p.State == "" {
@@ -1453,6 +1457,15 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 	sess, target, verr := d.reportTarget(cs, p.Session, p.Window)
 	if verr != nil {
 		return nil, verr
+	}
+	// An accepted new identity must never retain the previous conversation's
+	// history if its replacement is absent or refused by the path allowlist.
+	var piWindow, previousPiSession string
+	if p.Harness == "pi" && p.AgentSessionID != "" {
+		st := sess.GetState()
+		if idx, err := findWindowStateIndex(st.Windows, target); err == nil {
+			piWindow, previousPiSession = st.Windows[idx].ID, st.Windows[idx].AgentSessionID
+		}
 	}
 
 	report := AgentReport{
@@ -1521,7 +1534,7 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 	transcriptRefused := ""
 	switch {
 	case applied && p.TranscriptPath != "":
-		transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, p.TranscriptPath, "")
+		transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, p.TranscriptPath, "", p.TranscriptLeaf)
 	case applied && cs != nil && p.TranscriptPath == "" && p.AgentSessionID != "":
 		// A harness whose hook names its session and not its file (Amp):
 		// the manifest's session_file names the file, and it is held to the
@@ -1536,10 +1549,14 @@ func (d *Daemon) verbSetAgentState(cs *connState, params json.RawMessage) (any, 
 		// as a file the daemon can watch.
 		sid := strings.TrimSpace(p.AgentSessionID)
 		if path := d.storeTranscriptPath(p.Harness); path != "" {
-			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, sid)
+			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, sid, nil)
 		} else if path := d.sessionTranscriptPath(p.Harness, sid); path != "" {
-			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, "")
+			transcriptRefused = d.joinReportedTranscript(cs, sess, target, p.Harness, path, "", nil)
 		}
+	}
+	if applied && piWindow != "" && previousPiSession != p.AgentSessionID && (p.TranscriptPath == "" || transcriptRefused != "") {
+		sess.DropAgentTranscript(piWindow)
+		sess.emit(SessionEvent{Type: EventTranscript, Window: piWindow})
 	}
 	// state is the effective state, so a report a higher-ranked source outranked
 	// reports what the pane actually shows rather than what was asked for.
@@ -1675,16 +1692,21 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 		return nil, agentsDisabledError()
 	}
 	var p struct {
-		Session        string `json:"session"`
-		Window         string `json:"window"`
-		Harness        string `json:"harness"`
-		AgentSessionID string `json:"agent_session_id"`
-		HarnessPID     int    `json:"harness_pid"`
+		Session        string  `json:"session"`
+		Window         string  `json:"window"`
+		Harness        string  `json:"harness"`
+		AgentSessionID string  `json:"agent_session_id"`
+		HarnessPID     int     `json:"harness_pid"`
+		TranscriptPath string  `json:"transcript_path"`
+		TranscriptLeaf *string `json:"transcript_leaf"`
 	}
 	if verr := decodeParams(params, &p); verr != nil {
 		return nil, verr
 	}
 	harnessID := strings.TrimSpace(p.Harness)
+	if verr := checkTranscriptSelection(harnessID, p.TranscriptPath, p.TranscriptLeaf); verr != nil {
+		return nil, verr
+	}
 	if harnessID == "" {
 		return nil, invalidParam("harness", "harness is required: the id of the harness the conversation belongs to, e.g. qwen")
 	}
@@ -1707,12 +1729,20 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 		}
 		target = id
 	}
+	var piWindow, previousPiSession string
+	if harnessID == "pi" {
+		st := sess.GetState()
+		if idx, err := findWindowStateIndex(st.Windows, target); err == nil {
+			piWindow, previousPiSession = st.Windows[idx].ID, st.Windows[idx].AgentSessionID
+		}
+	}
 	stored, applied, reason, err := sess.applyAgentSession(target, AgentSessionReport{
 		Harness:    harnessID,
 		SessionID:  sid,
 		HarnessPID: p.HarnessPID,
 
 		HarnessIsCaller: callerRunsHarness(cs, p.HarnessPID),
+		TranscriptOnly:  p.TranscriptPath != "" || p.TranscriptLeaf != nil,
 	})
 	if err != nil {
 		return nil, mapResolveErr(err, sess)
@@ -1725,7 +1755,39 @@ func (d *Daemon) verbSetAgentSession(cs *connState, params json.RawMessage) (any
 	if reason != "" {
 		out["reason"] = reason
 	}
+	transcriptRefused := ""
+	if applied && p.TranscriptPath != "" {
+		transcriptRefused = d.joinReportedTranscript(cs, sess, target, harnessID, p.TranscriptPath, "", p.TranscriptLeaf)
+		if transcriptRefused != "" {
+			out["transcript_refused"] = transcriptRefused
+		}
+	}
+	if applied && piWindow != "" && previousPiSession != stored && (p.TranscriptPath == "" || transcriptRefused != "") {
+		sess.DropAgentTranscript(piWindow)
+		sess.emit(SessionEvent{Type: EventTranscript, Window: piWindow})
+	}
 	return out, nil
+}
+
+// checkTranscriptSelection bounds metadata before a report can change state.
+// Paths are checked independently by joinReportedTranscript, including the
+// caller's own-pane authority. A leaf never grants access to a different file.
+func checkTranscriptSelection(harnessID, path string, leaf *string) *verbError {
+	if leaf == nil {
+		return nil
+	}
+	if harnessID != "pi" || path == "" {
+		return invalidParam("transcript_leaf", "a selected leaf requires the pi harness and its transcript_path")
+	}
+	if len(*leaf) > 128 {
+		return invalidParam("transcript_leaf", "the selected entry id exceeds 128 bytes")
+	}
+	for _, c := range *leaf {
+		if !(c >= 'a' && c <= 'z' || c >= 'A' && c <= 'Z' || c >= '0' && c <= '9' || c == '-' || c == '_') {
+			return invalidParam("transcript_leaf", "the selected entry id must contain only letters, digits, '-' or '_'")
+		}
+	}
+	return nil
 }
 
 // maxAgentSessionIDLen bounds a reported conversation id. Every harness uses a
@@ -1750,7 +1812,7 @@ var agentKindNames = []string{harness.PromptKindApproval, harness.PromptKindQues
 // for its own pane, and the file must be a regular file under the harness's
 // transcript folder. A refusal is returned for the reply, so the hook's
 // --explain shows it, and logged without the path, which is the person's.
-func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, harnessID, path, session string) string {
+func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, harnessID, path, session string, leaf *string) string {
 	state := sess.GetState()
 	idx, err := findWindowStateIndex(state.Windows, target)
 	if err != nil {
@@ -1787,7 +1849,7 @@ func (d *Daemon) joinReportedTranscript(cs *connState, sess *Session, target, ha
 		sess.JoinAgentSession(w.ID, harnessID, tr.Reader, resolved, session)
 		return ""
 	}
-	_ = sess.JoinAgentTranscriptAs(w.ID, harnessID, tr.Reader, resolved, true)
+	_ = sess.joinAgentTranscriptLeaf(w.ID, harnessID, tr.Reader, resolved, true, leaf)
 	return ""
 }
 

@@ -501,6 +501,7 @@ type pluginDriver struct {
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 	ready chan struct{}
+	acks  chan string
 }
 
 // pluginLoadDeadline is a failsafe, not a budget. The driver says when the
@@ -546,7 +547,7 @@ func realNode() (string, error) {
 
 // startPlugin renders harness's plugin with tuios integration install and
 // starts it under the driver script, which knows each harness's API shape.
-func startPlugin(t *testing.T, base, harness, session, window string) *pluginDriver {
+func startPlugin(t *testing.T, base, harness, session, window string, reportCommand ...string) *pluginDriver {
 	t.Helper()
 	if _, err := exec.LookPath("node"); err != nil {
 		t.Skip("node is not installed")
@@ -575,7 +576,11 @@ func startPlugin(t *testing.T, base, harness, session, window string) *pluginDri
 		file = filepath.Join(xdgDir(base, "XDG_CONFIG_HOME"), "opencode", "plugins", "tuios-agent-state.js")
 	}
 	installHarness := strings.TrimSuffix(harness, "-v2")
-	if out, err := tuiosCLIEnv(t, base, env, "integration", "install", installHarness, "--command", tuiosBin); err != nil {
+	command := tuiosBin
+	if len(reportCommand) > 0 {
+		command = reportCommand[0]
+	}
+	if out, err := tuiosCLIEnv(t, base, env, "integration", "install", installHarness, "--command", command); err != nil {
 		t.Fatalf("integration install %s: %v\n%s", harness, err, out)
 	}
 	if harness == "opencode-v2" {
@@ -619,7 +624,7 @@ func startPlugin(t *testing.T, base, harness, session, window string) *pluginDri
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start node: %v", err)
 	}
-	d := &pluginDriver{cmd: cmd, stdin: stdin, ready: make(chan struct{})}
+	d := &pluginDriver{cmd: cmd, stdin: stdin, ready: make(chan struct{}), acks: make(chan string, 16)}
 	// closed is closed when node closes its stdout, which it does when it
 	// exits: a driver that dies before DRIVER-READY fails the wait at once.
 	closed := make(chan struct{})
@@ -629,6 +634,9 @@ func startPlugin(t *testing.T, base, harness, session, window string) *pluginDri
 		for sc.Scan() {
 			if sc.Text() == "DRIVER-READY" {
 				close(d.ready)
+			}
+			if ack, ok := strings.CutPrefix(sc.Text(), "DRIVER-ACK "); ok {
+				d.acks <- ack
 			}
 		}
 	}()
